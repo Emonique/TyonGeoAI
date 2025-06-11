@@ -1,104 +1,73 @@
-import os
-import sys
-
-# Add this at the top of your script - BEFORE other imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
-sys.path.insert(0, parent_dir)
-
+# execution/run_analysis.py
+from core import EntropyCalculator, FractalAnalyzer, ReservoirQualityIndex
 import numpy as np
-from core import fractal_analysis, entropy_calc, rqi_model, trap_predictor
-from utils import data_loader, data_simulator, unit_converter
 
-class GeoscienceAnalysisSystem:
-    """Integrated analysis system for geological applications"""
+class FormationAnalyzer:
+    """Core analysis workflow"""
     
-    def __init__(self, application='hydrocarbon'):
-        self.geo_memory = []
+    def __init__(self, application='groundwater', window_size=10):
         self.application = application
-    
-    def analyze_point(self, data_point):
-        """Analyze a single data point"""
-        depth = data_point['depth']
-        lithology = data_point.get('lithology', 'sandstone')
+        self.window_size = window_size
+        self.entropy_calc = EntropyCalculator()
+        self.fractal_analyzer = FractalAnalyzer()
+        self.results = []
         
-        # Generate or use provided porosity data
-        if 'porosity' in data_point:
-            porosity = data_point['porosity']
-            if not isinstance(porosity, list):
-                porosity = [porosity]  # Ensure array format
-        else:
-            # If base_porosity is not provided, use a default based on lithology
-            base_poro = data_point.get('base_porosity', 20)  # Default to 20%
-            porosity = data_simulator.simulate_porosity(
-                depth, 
-                base_poro, 
-                lithology
-            )
+    def analyze(self, depth, porosity, permeability, **params):
+        """Run sliding window analysis"""
+        results = []
         
-        # Get permeability
-        permeability = data_point.get('permeability', 100)
-        
-        # Core calculations
-        fractal_dim = fractal_analysis.compute_fractal_dimension(porosity)
-        geo_entropy = entropy_calc.shannon_entropy(porosity)
-        
-        # Calculate pressure and temperature if not provided
-        if 'pressure' not in data_point:
-            data_point['pressure'] = rqi_model.calculate_pressure(depth)
-        if 'temperature' not in data_point and self.application == 'geothermal':
-            data_point['temperature'] = rqi_model.calculate_temperature(depth)
-        
-        # Application-specific metrics
-        result = {
-            'depth': depth,
-            'lithology': lithology,
-            'porosity': porosity,
-            'permeability': permeability,
-            'fractal_dim': fractal_dim,
-            'entropy': geo_entropy,
-            'pressure': data_point['pressure'],
-        }
-        
-        # Add application-specific properties
-        if self.application == 'hydrocarbon' or self.application == 'groundwater':
-            rqi = rqi_model.compute_rqi(np.mean(porosity), permeability)
-            result['rqi'] = rqi
+        for i in range(len(depth) - self.window_size + 1):
+            window = slice(i, i+self.window_size)
+            window_depth = np.mean(depth[window])
             
+            # Core calculations
+            porosity_win = porosity[window]
+            perm_win = permeability[window]
+            
+            entropy = self.entropy_calc.calculate(porosity_win)
+            fractal_dim = self.fractal_analyzer.calculate(porosity_win)
+            
+            # Domain-specific quality index
             if self.application == 'groundwater':
-                hc = rqi_model.hydraulic_conductivity(permeability)
-                result['hydraulic_conductivity'] = hc
+                quality_index = ReservoirQualityIndex.groundwater(
+                    np.mean(porosity_win), 
+                    np.mean(perm_win)
+                )
+            elif self.application == 'hydrocarbon':
+                quality_index = ReservoirQualityIndex.hydrocarbon(
+                    np.mean(porosity_win), 
+                    np.mean(perm_win)
+                )
                 
-        elif self.application == 'contamination':
-            # Generate environmental data if not provided
-            if 'contaminant_risk' not in data_point:
-                env_data = data_simulator.generate_environmental_data(depth, lithology)
-                result['contaminant_risk'] = env_data['contaminant_risk']
-            else:
-                result['contaminant_risk'] = data_point['contaminant_risk']
-                
-        elif self.application == 'geothermal':
-            temperature = data_point.get('temperature', rqi_model.calculate_temperature(depth))
-            hc_ratio = rqi_model.heat_capacity_ratio(temperature, data_point['pressure'])
-            result['temperature'] = temperature
-            result['heat_capacity_ratio'] = hc_ratio
-        
-        return result
+            # Risk factors (domain-specific)
+            risks = self._calculate_risks(porosity_win, perm_win, params, window)
+            risk_factor = 1 - (sum(risks.values()) / len(risks)) if risks else 1
+            
+            result = {
+                'depth': window_depth,
+                'quality_index': quality_index,
+                'entropy': entropy,
+                'fractal_dim': fractal_dim,
+                'composite_score': quality_index * entropy * risk_factor,
+                **risks
+            }
+            results.append(result)
+            
+        self.results = results
+        return results
     
-    def analyze_dataset(self, dataset):
-        """Analyze a full dataset"""
-        self.geo_memory = []
-        for data_point in dataset:
-            analyzed_point = self.analyze_point(data_point)
-            self.geo_memory.append(analyzed_point)
-        
-        # Now run trap prediction on the entire analyzed dataset
-        predictions = trap_predictor.predict_traps(
-            self.geo_memory, 
-            application=self.application
-        )
-        
-        return {
-            "data_points": self.geo_memory,
-            "predictions": predictions
-          }
+    def _calculate_risks(self, porosity, perm, params, window):
+        """Calculate domain-specific risks"""
+        risks = {}
+        if self.application == 'groundwater':
+            # High clay content risk
+            if 'clay_content' in params:
+                clay = np.mean(params['clay_content'][window])
+                risks['high_clay_risk'] = 1 if clay > 0.35 else 0
+                
+            # High salinity risk
+            if 'salinity' in params:
+                salinity = np.mean(params['salinity'][window])
+                risks['high_salinity_risk'] = 1 if salinity > 1000 else 0
+                
+        return risks
